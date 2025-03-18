@@ -19,24 +19,24 @@ class FaceSampleCollector:
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
     
-    def collect_face_samples(self, person_id):
+    def collect_face_samples(self, registration_number, camera_index=0):
         """Collect multiple face samples from webcam"""
         # Create person directory
-        person_dir = os.path.join(self.save_dir, person_id)
+        person_dir = os.path.join(self.save_dir, registration_number)
         if not os.path.exists(person_dir):
             os.makedirs(person_dir)
         
-        # Initialize webcam
-        cap = cv2.VideoCapture(0)
+        # Initialize webcam with specified camera
+        cap = cv2.VideoCapture(camera_index)
         if not cap.isOpened():
-            print("Error: Could not open webcam.")
+            print(f"Error: Could not open camera {camera_index}.")
             return False
         
         # Initialize variables
         collected_samples = 0
         last_capture_time = time.time() - 3  # Wait 3 seconds between captures
         
-        print(f"Collecting {self.required_samples} face samples for {person_id}...")
+        print(f"Collecting {self.required_samples} face samples for {registration_number} using camera {camera_index}...")
         print("Please look at the camera and slightly change your head position for each capture.")
         
         while collected_samples < self.required_samples:
@@ -111,7 +111,7 @@ class FaceSampleCollector:
                     primary_face = faces[largest_face_idx]
                     
                     # Generate a unique filename
-                    filename = f"{person_id}_{collected_samples}_{uuid.uuid4().hex[:8]}"
+                    filename = f"{registration_number}_{collected_samples}_{uuid.uuid4().hex[:8]}"
                     
                     # Save face image
                     bbox = primary_face.bbox.astype(int)
@@ -142,7 +142,7 @@ class FaceSampleCollector:
         cv2.destroyAllWindows()
         
         if collected_samples == self.required_samples:
-            print(f"Successfully collected {collected_samples} samples for {person_id}")
+            print(f"Successfully collected {collected_samples} samples for {registration_number}")
             return True
         else:
             print(f"Collection interrupted. Collected {collected_samples}/{self.required_samples} samples.")
@@ -152,8 +152,14 @@ class FaceSampleCollector:
 if __name__ == "__main__":
     collector = FaceSampleCollector(required_samples=5)
     
-    # Get person ID from user
-    person_id = input("Enter the person ID (e.g., student001): ")
+    # Get registration number from user
+    registration_number = input("Enter the registration number (e.g., student001): ")
+    
+    # Get camera index (optional)
+    try:
+        camera_index = int(input("Enter camera index (0, 1, 2, etc.) or press Enter for default: ") or "0")
+    except ValueError:
+        camera_index = 0
     
     # Collect face samples
-    collector.collect_face_samples(person_id)
+    collector.collect_face_samples(registration_number, camera_index)

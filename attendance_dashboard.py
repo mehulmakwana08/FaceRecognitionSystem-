@@ -37,7 +37,7 @@ class AttendanceApp:
         
         # Create Treeview
         self.tree = ttk.Treeview(table_frame, columns=("ID", "Time", "Status"), show="headings")
-        self.tree.heading("ID", text="Student ID")
+        self.tree.heading("ID", text="Registration Number")
         self.tree.heading("Time", text="Check-in Time")
         self.tree.heading("Status", text="Status")
         
@@ -104,8 +104,8 @@ class AttendanceApp:
         if os.path.exists('face_db/metadata.txt'):
             with open('face_db/metadata.txt', 'r') as f:
                 for line in f:
-                    person_id = line.strip().split(',')[0]
-                    students.add(person_id)
+                    registration_number = line.strip().split(',')[0]
+                    students.add(registration_number)
         return students
 
 # Run the application

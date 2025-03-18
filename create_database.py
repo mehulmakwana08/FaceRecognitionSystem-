@@ -9,7 +9,7 @@ app = FaceAnalysis(name='buffalo_l')
 app.prepare(ctx_id=0, det_size=(640, 640))
 
 # Function to register a new face
-def register_face(person_id, image_path):
+def register_face(registration_number, image_path):
     img = cv2.imread(image_path)
     faces = app.get(img)
     
@@ -25,11 +25,11 @@ def register_face(person_id, image_path):
     
     # Save to database (using simple file storage for demo)
     # In a real system, use a proper database like SQLite, PostgreSQL, etc.
-    np.save(f'face_db/{person_id}.npy', embedding)
+    np.save(f'face_db/{registration_number}.npy', embedding)
     
     # Save metadata (name, ID, etc.)
     with open('face_db/metadata.txt', 'a') as f:
-        f.write(f"{person_id},{os.path.basename(image_path)}\n")
+        f.write(f"{registration_number},{os.path.basename(image_path)}\n")
     
     return True, "Face registered successfully"
 

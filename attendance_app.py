@@ -8,6 +8,7 @@ import csv
 import json
 from datetime import datetime
 import io
+import cv2
 import face_sample_collector
 import face_database_manager
 import recognition_system
@@ -55,18 +56,32 @@ class AttendanceSystemApp:
         details_frame = ttk.LabelFrame(frame, text="Person Details")
         details_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        ttk.Label(details_frame, text="Person ID:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
-        self.person_id_var = tk.StringVar()
-        ttk.Entry(details_frame, textvariable=self.person_id_var, width=20).grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        # Camera selection
+        ttk.Label(details_frame, text="Camera:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.reg_camera_var = tk.StringVar(value="0")
+        self.reg_camera_combobox = ttk.Combobox(details_frame, textvariable=self.reg_camera_var, width=5)
+        self.reg_camera_combobox.grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
         
-        ttk.Label(details_frame, text="Person Name:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
-        self.person_name_var = tk.StringVar()
-        ttk.Entry(details_frame, textvariable=self.person_name_var, width=30).grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
+        # Add button to refresh camera list
+        refresh_cam_btn = ttk.Button(details_frame, text="Refresh", command=self._refresh_reg_camera_list)
+        refresh_cam_btn.grid(row=0, column=2, sticky=tk.W, padx=5, pady=5)
         
-        ttk.Label(details_frame, text="Number of Samples:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(details_frame, text="Registration Number:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        self.registration_number_var = tk.StringVar()
+        ttk.Entry(details_frame, textvariable=self.registration_number_var, width=20).grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
+        
+        ttk.Label(details_frame, text="Full Name:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        self.full_name_var = tk.StringVar()
+        ttk.Entry(details_frame, textvariable=self.full_name_var, width=30).grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
+        
+        ttk.Label(details_frame, text="Mobile Number:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        self.mobile_number_var = tk.StringVar()
+        ttk.Entry(details_frame, textvariable=self.mobile_number_var, width=20).grid(row=3, column=1, sticky=tk.W, padx=5, pady=5)
+        
+        ttk.Label(details_frame, text="Number of Samples:").grid(row=4, column=0, sticky=tk.W, padx=5, pady=5)
         self.samples_var = tk.StringVar(value="5")
         samples_entry = ttk.Spinbox(details_frame, from_=1, to=10, textvariable=self.samples_var, width=5)
-        samples_entry.grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
+        samples_entry.grid(row=4, column=1, sticky=tk.W, padx=5, pady=5)
         
         # Action buttons
         buttons_frame = ttk.Frame(frame)
@@ -85,6 +100,34 @@ class AttendanceSystemApp:
         self.status_text = tk.Text(status_frame, height=10, wrap=tk.WORD)
         self.status_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.status_text.config(state=tk.DISABLED)
+        
+        # Initialize camera list for registration - MOVED after creating status text widget
+        self._refresh_reg_camera_list()
+    
+    # Also enhance the refresh method with better error handling
+    def _refresh_reg_camera_list(self):
+        """Refresh the list of available cameras for registration tab"""
+        # Check available cameras (up to index 5 should be enough for most systems)
+        available_cameras = []
+        for i in range(5):
+            try:
+                cap = cv2.VideoCapture(i)
+                if cap.isOpened():
+                    available_cameras.append(str(i))
+                cap.release()
+            except Exception as e:
+                print(f"Error checking camera {i}: {str(e)}")
+        
+        # Update combobox values
+        if available_cameras:
+            self.reg_camera_combobox['values'] = available_cameras
+            self.reg_camera_var.set(available_cameras[0])  # Set to first available camera
+        else:
+            self.reg_camera_combobox['values'] = ["0"]  # Default to camera 0
+            self.reg_camera_var.set("0")
+        
+        # Update status
+        self._update_status(f"Found {len(available_cameras)} camera(s)\n")
     
     def _init_recognition_tab(self):
         """Initialize the Recognition tab"""
@@ -95,13 +138,23 @@ class AttendanceSystemApp:
         settings_frame = ttk.LabelFrame(frame, text="Recognition Settings")
         settings_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        ttk.Label(settings_frame, text="Similarity Threshold:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        # Camera selection
+        ttk.Label(settings_frame, text="Camera:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.camera_var = tk.StringVar(value="0")
+        self.camera_combobox = ttk.Combobox(settings_frame, textvariable=self.camera_var, width=5)
+        self.camera_combobox.grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        
+        # Add button to refresh camera list
+        refresh_cam_btn = ttk.Button(settings_frame, text="Refresh", command=self._refresh_camera_list)
+        refresh_cam_btn.grid(row=0, column=2, sticky=tk.W, padx=5, pady=5)
+        
+        ttk.Label(settings_frame, text="Similarity Threshold:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
         self.threshold_var = tk.StringVar(value="0.4")
         threshold_entry = ttk.Spinbox(settings_frame, from_=0.1, to=0.9, increment=0.1, textvariable=self.threshold_var, width=5)
-        threshold_entry.grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        threshold_entry.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
         
         self.mark_attendance_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(settings_frame, text="Mark Attendance", variable=self.mark_attendance_var).grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=5, pady=5)
+        ttk.Checkbutton(settings_frame, text="Mark Attendance", variable=self.mark_attendance_var).grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=5, pady=5)
         
         # Action buttons
         buttons_frame = ttk.Frame(frame)
@@ -117,6 +170,34 @@ class AttendanceSystemApp:
         self.recog_status_text = tk.Text(status_frame, height=10, wrap=tk.WORD)
         self.recog_status_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.recog_status_text.config(state=tk.DISABLED)
+        
+        # Initialize camera list - MOVED after creating status text widget
+        self._refresh_camera_list()
+    
+    # Also make the refresh method more robust
+    def _refresh_camera_list(self):
+        """Refresh the list of available cameras"""
+        # Check available cameras (up to index 5 should be enough for most systems)
+        available_cameras = []
+        for i in range(5):
+            try:
+                cap = cv2.VideoCapture(i)
+                if cap.isOpened():
+                    available_cameras.append(str(i))
+                cap.release()
+            except Exception as e:
+                print(f"Error checking camera {i}: {str(e)}")
+        
+        # Update combobox values
+        if available_cameras:
+            self.camera_combobox['values'] = available_cameras
+            self.camera_var.set(available_cameras[0])  # Set to first available camera
+        else:
+            self.camera_combobox['values'] = ["0"]  # Default to camera 0
+            self.camera_var.set("0")
+        
+        # Update status
+        self._update_recog_status(f"Found {len(available_cameras)} camera(s)\n")
     
     def _init_management_tab(self):
         """Initialize the Management tab"""
@@ -128,14 +209,16 @@ class AttendanceSystemApp:
         list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Create Treeview for person list
-        self.person_tree = ttk.Treeview(list_frame, columns=("ID", "Name", "Samples", "Registration Date"), show="headings")
+        self.person_tree = ttk.Treeview(list_frame, columns=("ID", "Name", "Mobile", "Samples", "Registration Date"), show="headings")
         self.person_tree.heading("ID", text="ID")
         self.person_tree.heading("Name", text="Name")
+        self.person_tree.heading("Mobile", text="Mobile Number")
         self.person_tree.heading("Samples", text="Samples")
         self.person_tree.heading("Registration Date", text="Registration Date")
         
         self.person_tree.column("ID", width=100)
-        self.person_tree.column("Name", width=200)
+        self.person_tree.column("Name", width=150)
+        self.person_tree.column("Mobile", width=120)
         self.person_tree.column("Samples", width=80)
         self.person_tree.column("Registration Date", width=120)
         
@@ -215,19 +298,21 @@ class AttendanceSystemApp:
     # Registration tab functions
     def _collect_face_samples(self):
         """Start face sample collection process"""
-        person_id = self.person_id_var.get().strip()
-        if not person_id:
-            messagebox.showerror("Error", "Please enter a Person ID")
+        registration_number = self.registration_number_var.get().strip()
+        if not registration_number:
+            messagebox.showerror("Error", "Please enter a Registration Number")
             return
         
         try:
             samples = int(self.samples_var.get())
+            camera_index = int(self.reg_camera_var.get())
         except ValueError:
-            messagebox.showerror("Error", "Invalid number of samples")
+            messagebox.showerror("Error", "Invalid input values")
             return
         
         # Update status
-        self._update_status(f"Starting face sample collection for {person_id}...\n")
+        self._update_status(f"Starting face sample collection for {registration_number}...\n")
+        self._update_status(f"Using camera {camera_index}\n")
         self._update_status("Please look at the camera and follow the instructions.\n")
         
         # Disable buttons during collection
@@ -237,14 +322,14 @@ class AttendanceSystemApp:
         # Run collection in a separate thread
         def collection_thread():
             collector = face_sample_collector.FaceSampleCollector(required_samples=samples)
-            result = collector.collect_face_samples(person_id)
+            result = collector.collect_face_samples(registration_number, camera_index=camera_index)
             
             # Re-enable buttons
             self.root.after(0, lambda: self.collect_btn.config(state=tk.NORMAL))
             self.root.after(0, lambda: self.register_btn.config(state=tk.NORMAL))
             
             if result:
-                self.root.after(0, lambda: self._update_status(f"Successfully collected {samples} samples for {person_id}.\n"))
+                self.root.after(0, lambda: self._update_status(f"Successfully collected {samples} samples for {registration_number}.\n"))
                 self.root.after(0, lambda: self._update_status("You can now register this person using the 'Register Person' button.\n"))
             else:
                 self.root.after(0, lambda: self._update_status("Sample collection interrupted or failed.\n"))
@@ -255,24 +340,25 @@ class AttendanceSystemApp:
     
     def _register_person(self):
         """Register a person in the database"""
-        person_id = self.person_id_var.get().strip()
-        person_name = self.person_name_var.get().strip()
+        registration_number = self.registration_number_var.get().strip()
+        full_name = self.full_name_var.get().strip()
+        mobile_number = self.mobile_number_var.get().strip()
         
-        if not person_id:
-            messagebox.showerror("Error", "Please enter a Person ID")
+        if not registration_number:
+            messagebox.showerror("Error", "Please enter a Registration Number")
             return
         
-        if not person_name:
-            person_name = person_id  # Use ID as name if not provided
+        if not full_name:
+            full_name = registration_number  # Use registration number as name if not provided
         
         # Update status
-        self._update_status(f"Registering {person_id} ({person_name})...\n")
+        self._update_status(f"Registering {registration_number} ({full_name})...\n")
         
         # Register person
-        result = self.db_manager.register_person(person_id, person_name)
+        result = self.db_manager.register_person(registration_number, full_name, mobile_number)
         
         if result:
-            self._update_status(f"Successfully registered {person_name} in the database.\n")
+            self._update_status(f"Successfully registered {full_name} in the database.\n")
             # Refresh the person list
             self._refresh_person_list()
         else:
@@ -292,15 +378,19 @@ class AttendanceSystemApp:
             threshold = float(self.threshold_var.get())
             if threshold < 0.1 or threshold > 0.9:
                 raise ValueError("Threshold must be between 0.1 and 0.9")
-        except ValueError:
-            messagebox.showerror("Error", "Invalid threshold value")
+            
+            # Get selected camera index
+            camera_index = int(self.camera_var.get())
+            
+        except ValueError as e:
+            messagebox.showerror("Error", f"Invalid input: {str(e)}")
             return
         
         mark_attendance = self.mark_attendance_var.get()
         
         # Update status
         self._update_recog_status("Starting face recognition...\n")
-        self._update_recog_status(f"Threshold: {threshold}, Mark Attendance: {mark_attendance}\n")
+        self._update_recog_status(f"Camera: {camera_index}, Threshold: {threshold}, Mark Attendance: {mark_attendance}\n")
         self._update_recog_status("Press 'q' in the recognition window to stop.\n")
         
         # Disable button during recognition
@@ -309,7 +399,7 @@ class AttendanceSystemApp:
         # Run recognition in a separate thread
         def recognition_thread():
             recognizer = recognition_system.FaceRecognitionSystem(threshold=threshold)
-            recognizer.recognize_from_webcam(mark_attendance=mark_attendance)
+            recognizer.recognize_from_webcam(camera_index=camera_index, mark_attendance=mark_attendance)
             
             # Re-enable button
             self.root.after(0, lambda: self.start_recog_btn.config(state=tk.NORMAL))
@@ -349,6 +439,7 @@ class AttendanceSystemApp:
                             self.person_tree.insert("", tk.END, values=(
                                 person_id,
                                 info.get("name", person_id),
+                                info.get("mobile", ""),
                                 info.get("sample_count", "?"),
                                 info.get("registration_date", "Unknown")
                             ))
@@ -362,22 +453,22 @@ class AttendanceSystemApp:
             messagebox.showinfo("Information", "Please select a person to remove")
             return
         
-        # Get the selected person's ID
-        person_id = self.person_tree.item(selection[0], "values")[0]
+        # Get the selected person's registration number
+        registration_number = self.person_tree.item(selection[0], "values")[0]
         
         # Confirm removal
-        confirmed = messagebox.askyesno("Confirm", f"Are you sure you want to remove {person_id}?")
+        confirmed = messagebox.askyesno("Confirm", f"Are you sure you want to remove {registration_number}?")
         if not confirmed:
             return
         
         # Remove the person
-        result = self.db_manager.remove_person(person_id)
+        result = self.db_manager.remove_person(registration_number)
         
         if result:
-            messagebox.showinfo("Success", f"{person_id} has been removed from the database")
+            messagebox.showinfo("Success", f"{registration_number} has been removed from the database")
             self._refresh_person_list()
         else:
-            messagebox.showerror("Error", f"Failed to remove {person_id}")
+            messagebox.showerror("Error", f"Failed to remove {registration_number}")
     
     # Reports tab functions
     def _load_attendance_report(self):

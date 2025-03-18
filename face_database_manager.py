@@ -6,6 +6,7 @@ from insightface.app import FaceAnalysis
 import glob
 import json
 import shutil
+from pymilvus import connections, FieldSchema, CollectionSchema, DataType, Collection, utility
 
 class FaceDatabaseManager:
     def __init__(self, samples_dir='face_samples', db_dir='face_db'):
@@ -15,6 +16,7 @@ class FaceDatabaseManager:
         self.samples_dir = samples_dir
         self.db_dir = db_dir
         
+        connections.connect("default", host="localhost", port="19530")
         # Create directories if they don't exist
         for directory in [samples_dir, db_dir]:
             if not os.path.exists(directory):
@@ -37,22 +39,22 @@ class FaceDatabaseManager:
         with open(self.metadata_file, 'w') as f:
             json.dump(self.metadata, f, indent=2)
     
-    def register_person(self, person_id, person_name=None):
+    def register_person(self, registration_number, full_name=None, mobile_number=None):
         """Register a person using multiple face samples"""
         # Check if sample directory exists for this person
-        person_sample_dir = os.path.join(self.samples_dir, person_id)
+        person_sample_dir = os.path.join(self.samples_dir, registration_number)
         if not os.path.exists(person_sample_dir):
-            print(f"No samples found for {person_id}. Please collect samples first.")
+            print(f"No samples found for {registration_number}. Please collect samples first.")
             return False
         
         # Get all embedding files for this person
         embedding_files = glob.glob(os.path.join(person_sample_dir, "*.npy"))
         if not embedding_files:
-            print(f"No embeddings found for {person_id}.")
+            print(f"No embeddings found for {registration_number}.")
             return False
         
         # Create folder for this person in the database if it doesn't exist
-        person_db_dir = os.path.join(self.db_dir, person_id)
+        person_db_dir = os.path.join(self.db_dir, registration_number)
         if not os.path.exists(person_db_dir):
             os.makedirs(person_db_dir)
         
@@ -68,32 +70,33 @@ class FaceDatabaseManager:
                 shutil.copy2(img_file, os.path.join(person_db_dir, os.path.basename(img_file)))
         
         # Update metadata
-        self.metadata["persons"][person_id] = {
-            "name": person_name if person_name else person_id,
+        self.metadata["persons"][registration_number] = {
+            "name": full_name if full_name else registration_number,
+            "mobile": mobile_number if mobile_number else "",
             "sample_count": len(embedding_files),
             "registration_date": self._get_current_date()
         }
         self._save_metadata()
         
-        print(f"Successfully registered {person_id} with {len(embedding_files)} face samples.")
+        print(f"Successfully registered {registration_number} with {len(embedding_files)} face samples.")
         return True
     
-    def remove_person(self, person_id):
+    def remove_person(self, registration_number):
         """Remove a person from the database"""
-        person_db_dir = os.path.join(self.db_dir, person_id)
+        person_db_dir = os.path.join(self.db_dir, registration_number)
         
         if os.path.exists(person_db_dir):
             shutil.rmtree(person_db_dir)
             
             # Update metadata
-            if person_id in self.metadata["persons"]:
-                del self.metadata["persons"][person_id]
+            if registration_number in self.metadata["persons"]:
+                del self.metadata["persons"][registration_number]
                 self._save_metadata()
             
-            print(f"Successfully removed {person_id} from the database.")
+            print(f"Successfully removed {registration_number} from the database.")
             return True
         else:
-            print(f"{person_id} not found in the database.")
+            print(f"{registration_number} not found in the database.")
             return False
     
     def list_registered_persons(self):
@@ -103,12 +106,12 @@ class FaceDatabaseManager:
             return []
         
         print("\nRegistered Persons:")
-        print("-" * 60)
-        print(f"{'ID':<15} {'Name':<20} {'Samples':<10} {'Registration Date':<20}")
-        print("-" * 60)
+        print("-" * 80)
+        print(f"{'Registration #':<15} {'Full Name':<20} {'Mobile':<15} {'Samples':<10} {'Registration Date':<20}")
+        print("-" * 80)
         
-        for person_id, info in self.metadata["persons"].items():
-            print(f"{person_id:<15} {info['name']:<20} {info['sample_count']:<10} {info['registration_date']:<20}")
+        for registration_number, info in self.metadata["persons"].items():
+            print(f"{registration_number:<15} {info['name']:<20} {info.get('mobile', ''):<15} {info['sample_count']:<10} {info['registration_date']:<20}")
         
         return list(self.metadata["persons"].keys())
     
@@ -132,16 +135,17 @@ if __name__ == "__main__":
         choice = input("Enter your choice (1-4): ")
         
         if choice == "1":
-            person_id = input("Enter person ID: ")
-            person_name = input("Enter person name (optional): ")
-            db_manager.register_person(person_id, person_name)
+            registration_number = input("Enter registration number: ")
+            full_name = input("Enter full name (optional): ")
+            mobile_number = input("Enter mobile number (optional): ")
+            db_manager.register_person(registration_number, full_name, mobile_number)
         elif choice == "2":
             db_manager.list_registered_persons()
         elif choice == "3":
-            person_id = input("Enter person ID to remove: ")
-            confirm = input(f"Are you sure you want to remove {person_id}? (y/n): ")
+            registration_number = input("Enter registration number to remove: ")
+            confirm = input(f"Are you sure you want to remove {registration_number}? (y/n): ")
             if confirm.lower() == 'y':
-                db_manager.remove_person(person_id)
+                db_manager.remove_person(registration_number)
         elif choice == "4":
             break
         else:

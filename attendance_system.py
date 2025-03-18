@@ -19,15 +19,15 @@ def load_face_db():
     if os.path.exists('face_db/metadata.txt'):
         with open('face_db/metadata.txt', 'r') as f:
             for line in f:
-                person_id, image_name = line.strip().split(',')
-                metadata[person_id] = image_name
+                registration_number, image_name = line.strip().split(',')
+                metadata[registration_number] = image_name
     
     # Load embeddings
     for file in os.listdir('face_db'):
         if file.endswith('.npy'):
-            person_id = os.path.splitext(file)[0]
+            registration_number = os.path.splitext(file)[0]
             embedding = np.load(f'face_db/{file}')
-            face_db[person_id] = embedding
+            face_db[registration_number] = embedding
     
     return face_db, metadata
 
@@ -68,14 +68,14 @@ def mark_attendance():
             min_distance = float('inf')
             recognized_id = None
             
-            for person_id, db_embedding in face_db.items():
+            for registration_number, db_embedding in face_db.items():
                 # Calculate similarity (cosine similarity)
                 similarity = np.dot(embedding, db_embedding) / (np.linalg.norm(embedding) * np.linalg.norm(db_embedding))
                 distance = 1.0 - similarity
                 
                 if distance < min_distance and distance < 0.4:  # 0.4 is a threshold, adjust as needed
                     min_distance = distance
-                    recognized_id = person_id
+                    recognized_id = registration_number
             
             # Draw rectangle around face
             bbox = face.bbox.astype(int)

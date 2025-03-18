@@ -45,8 +45,8 @@ class FaceRecognitionSystem:
                 metadata = json.load(f)
         
         # Iterate through all person directories
-        for person_id in os.listdir(self.db_dir):
-            person_dir = os.path.join(self.db_dir, person_id)
+        for registration_number in os.listdir(self.db_dir):
+            person_dir = os.path.join(self.db_dir, registration_number)
             
             # Skip metadata file and non-directories
             if not os.path.isdir(person_dir):
@@ -60,11 +60,11 @@ class FaceRecognitionSystem:
                 embeddings = [np.load(f) for f in embedding_files]
                 
                 # Get person name from metadata if available
-                name = person_id
-                if "persons" in metadata and person_id in metadata["persons"]:
-                    name = metadata["persons"][person_id].get("name", person_id)
+                name = registration_number
+                if "persons" in metadata and registration_number in metadata["persons"]:
+                    name = metadata["persons"][registration_number].get("name", registration_number)
                 
-                person_db[person_id] = {
+                person_db[registration_number] = {
                     "name": name,
                     "embeddings": embeddings
                 }
@@ -77,7 +77,7 @@ class FaceRecognitionSystem:
         best_match_name = None
         best_similarity = -1
         
-        for person_id, person_data in self.person_db.items():
+        for registration_number, person_data in self.person_db.items():
             # Compare with all embeddings for this person
             similarities = [self._calculate_similarity(face_embedding, ref_emb) 
                            for ref_emb in person_data["embeddings"]]
@@ -88,7 +88,7 @@ class FaceRecognitionSystem:
             # Update best match if this is better
             if max_similarity > best_similarity:
                 best_similarity = max_similarity
-                best_match_id = person_id
+                best_match_id = registration_number
                 best_match_name = person_data["name"]
         
         # Apply threshold
@@ -101,12 +101,12 @@ class FaceRecognitionSystem:
         """Calculate cosine similarity between two embeddings"""
         return np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
     
-    def recognize_from_webcam(self, mark_attendance=True):
+    def recognize_from_webcam(self, camera_index=0, mark_attendance=True):
         """Run face recognition on webcam feed and optionally mark attendance"""
-        # Initialize webcam
-        cap = cv2.VideoCapture(0)
+        # Initialize webcam with specified camera index
+        cap = cv2.VideoCapture(camera_index)
         if not cap.isOpened():
-            print("Error: Could not open webcam.")
+            print(f"Error: Could not open camera {camera_index}.")
             return
         
         # For attendance tracking
@@ -143,11 +143,11 @@ class FaceRecognitionSystem:
                 embedding = face.embedding
                 
                 # Find best match
-                person_id, person_name, similarity = self._find_best_match(embedding)
+                registration_number, full_name, similarity = self._find_best_match(embedding)
                 
                 # Draw bounding box
                 bbox = face.bbox.astype(int)
-                if person_id:
+                if registration_number:
                     # Recognized - draw green box
                     cv2.rectangle(display_frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
                     
@@ -155,7 +155,7 @@ class FaceRecognitionSystem:
                     confidence = int(similarity * 100)
                     
                     # Display name and confidence
-                    text = f"{person_name} ({confidence}%)"
+                    text = f"{full_name} ({confidence}%)"
                     cv2.putText(
                         display_frame,
                         text,
@@ -167,14 +167,14 @@ class FaceRecognitionSystem:
                     )
                     
                     # Mark attendance if not already marked
-                    if mark_attendance and person_id not in recognized_persons:
+                    if mark_attendance and registration_number not in recognized_persons:
                         now = datetime.now().strftime("%H:%M:%S")
                         with open(attendance_file, 'a', newline='') as f:
                             writer = csv.writer(f)
-                            writer.writerow([person_id, person_name, now, 'Present'])
+                            writer.writerow([registration_number, full_name, now, 'Present'])
                         
-                        recognized_persons.add(person_id)
-                        print(f"Marked attendance for {person_name} ({person_id})")
+                        recognized_persons.add(registration_number)
+                        print(f"Marked attendance for {full_name} ({registration_number})")
                 else:
                     # Unknown - draw red box
                     cv2.rectangle(display_frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 0, 255), 2)
