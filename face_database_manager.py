@@ -249,9 +249,14 @@ class FaceDatabaseManager:
             if len(results) == 0:
                 raise ValueError(f"Registration number {registration_number} not found")
             
-            # Delete all records for this registration number
-            collection.delete(f"registration_number == '{registration_number}'")
-            print(f"Successfully removed person with registration number {registration_number}")
+            # Delete each record individually by its primary key
+            deleted_count = 0
+            for record in results:
+                id_val = record["id"]
+                collection.delete(f"id == '{id_val}'")
+                deleted_count += 1
+            
+            print(f"Successfully removed person with registration number {registration_number} ({deleted_count} records)")
             return True
             
         except Exception as e:
@@ -363,45 +368,6 @@ class FaceDatabaseManager:
         except Exception as e:
             print(f"Error performing face matching: {e}")
             return None, None, 0
-
-    def _refresh_person_list(self):
-        """Refresh the list of registered persons in the management tab"""
-        # Clear the current list
-        for item in self.person_tree.get_children():
-            self.person_tree.delete(item)
-        
-        try:
-            # Debug statement
-            print("Refreshing person list...")
-            
-            # Get the list of registered persons
-            persons = self.db_manager.list_registered_persons()
-            print(f"Retrieved {len(persons)} persons from database")
-            
-            # Add them to the tree view
-            for reg_num, info in persons.items():
-                full_name = info.get("full_name", "")
-                mobile = info.get("mobile_number", "")
-                sample_count = info.get("sample_count", "0")
-                reg_date = info.get("registration_date", "")
-                
-                print(f"Adding to tree: {reg_num}, {full_name}, {mobile}, {sample_count}, {reg_date}")
-                
-                self.person_tree.insert("", tk.END, values=(
-                    reg_num,
-                    full_name,
-                    mobile,
-                    sample_count,
-                    reg_date
-                ))
-            
-            print(f"Added {len(persons)} entries to the tree view")
-                    
-        except Exception as e:
-            print(f"Error in _refresh_person_list: {e}")
-            import traceback
-            traceback.print_exc()
-            messagebox.showerror("Error", f"Failed to load registered persons: {str(e)}")
 
 # Example usage
 if __name__ == "__main__":

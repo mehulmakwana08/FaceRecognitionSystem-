@@ -12,6 +12,7 @@ import cv2
 import face_sample_collector
 import face_database_manager
 import recognition_system
+from PIL import Image, ImageTk  # Add PIL imports for image conversion
 
 class AttendanceSystemApp:
     def __init__(self, root):
@@ -35,19 +36,44 @@ class AttendanceSystemApp:
         
         self.tab_control.pack(expand=1, fill="both")
         
+        # Initialize process tracking
+        self.current_process = None
+        
+        # Variables for camera preview
+        self.camera_active = False
+        self.camera_cap = None
+        self.preview_after_id = None
+        
+        # Use the same directory for both components
+        samples_dir = 'face_samples'
+        
+        # Initialize the database manager first
+        try:
+            self.db_manager = face_database_manager.FaceDatabaseManager(samples_dir=samples_dir)
+            print("Database manager initialized successfully")
+        except Exception as e:
+            print(f"Error initializing database manager: {e}")
+            messagebox.showerror("Error", f"Failed to connect to database: {str(e)}")
+            self.db_manager = None
+            
+        # Initialize the face collector
+        self.collector = face_sample_collector.FaceSampleCollector(save_dir=samples_dir)
+        
         # Initialize tab contents
         self._init_registration_tab()
         self._init_recognition_tab()
         self._init_management_tab()
         self._init_reports_tab()
         
-        # Initialize process tracking
-        self.current_process = None
+        # Add tab change event to manage camera resources
+        self.tab_control.bind("<<NotebookTabChanged>>", self._on_tab_change)
         
-        # Use the same directory for both components
-        samples_dir = 'face_samples'
-        self.collector = face_sample_collector.FaceSampleCollector(save_dir=samples_dir)
-        self.db_manager = face_database_manager.FaceDatabaseManager(samples_dir=samples_dir)
+        # Handle window closing
+        root.protocol("WM_DELETE_WINDOW", self._on_closing)
+        
+        # Add recognition control flag
+        self.stop_recognition = False
+        self.recognition_active = False
     
     def _init_registration_tab(self):
         """Initialize the Registration tab"""
@@ -85,9 +111,20 @@ class AttendanceSystemApp:
         samples_entry = ttk.Spinbox(details_frame, from_=1, to=10, textvariable=self.samples_var, width=5)
         samples_entry.grid(row=4, column=1, sticky=tk.W, padx=5, pady=5)
         
+        # Camera preview frame
+        preview_frame = ttk.LabelFrame(frame, text="Camera Preview")
+        preview_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Canvas for camera preview
+        self.reg_preview_canvas = tk.Canvas(preview_frame, bg="black")
+        self.reg_preview_canvas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
         # Action buttons
         buttons_frame = ttk.Frame(frame)
-        buttons_frame.pack(fill=tk.X, padx=5, pady=20)
+        buttons_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.start_preview_btn = ttk.Button(buttons_frame, text="Start Preview", command=self._start_reg_preview)
+        self.start_preview_btn.pack(side=tk.LEFT, padx=5)
         
         self.collect_btn = ttk.Button(buttons_frame, text="Collect Face Samples", command=self._collect_face_samples)
         self.collect_btn.pack(side=tk.LEFT, padx=5)
@@ -97,39 +134,14 @@ class AttendanceSystemApp:
         
         # Status display
         status_frame = ttk.LabelFrame(frame, text="Status")
-        status_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        status_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        self.status_text = tk.Text(status_frame, height=10, wrap=tk.WORD)
+        self.status_text = tk.Text(status_frame, height=5, wrap=tk.WORD)
         self.status_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.status_text.config(state=tk.DISABLED)
         
-        # Initialize camera list for registration - MOVED after creating status text widget
+        # Initialize camera list for registration
         self._refresh_reg_camera_list()
-    
-    # Also enhance the refresh method with better error handling
-    def _refresh_reg_camera_list(self):
-        """Refresh the list of available cameras for registration tab"""
-        # Check available cameras (up to index 5 should be enough for most systems)
-        available_cameras = []
-        for i in range(5):
-            try:
-                cap = cv2.VideoCapture(i)
-                if cap.isOpened():
-                    available_cameras.append(str(i))
-                cap.release()
-            except Exception as e:
-                print(f"Error checking camera {i}: {str(e)}")
-        
-        # Update combobox values
-        if available_cameras:
-            self.reg_camera_combobox['values'] = available_cameras
-            self.reg_camera_var.set(available_cameras[0])  # Set to first available camera
-        else:
-            self.reg_camera_combobox['values'] = ["0"]  # Default to camera 0
-            self.reg_camera_var.set("0")
-        
-        # Update status
-        self._update_status(f"Found {len(available_cameras)} camera(s)\n")
     
     def _init_recognition_tab(self):
         """Initialize the Recognition tab"""
@@ -158,23 +170,59 @@ class AttendanceSystemApp:
         self.mark_attendance_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(settings_frame, text="Mark Attendance", variable=self.mark_attendance_var).grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=5, pady=5)
         
+        # Camera preview frame
+        recog_preview_frame = ttk.LabelFrame(frame, text="Recognition Preview")
+        recog_preview_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Canvas for camera preview
+        self.recog_preview_canvas = tk.Canvas(recog_preview_frame, bg="black")
+        self.recog_preview_canvas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
         # Action buttons
         buttons_frame = ttk.Frame(frame)
-        buttons_frame.pack(fill=tk.X, padx=5, pady=20)
+        buttons_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        self.start_recog_btn = ttk.Button(buttons_frame, text="Start Recognition", command=self._start_recognition)
+        self.start_recog_preview_btn = ttk.Button(buttons_frame, text="Start Preview", command=self._start_recog_preview)
+        self.start_recog_preview_btn.pack(side=tk.LEFT, padx=5)
+        
+        self.start_recog_btn = ttk.Button(buttons_frame, text="Start Recognition", command=self._toggle_recognition)
         self.start_recog_btn.pack(side=tk.LEFT, padx=5)
         
         # Status display
         status_frame = ttk.LabelFrame(frame, text="Recognition Status")
-        status_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        status_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        self.recog_status_text = tk.Text(status_frame, height=10, wrap=tk.WORD)
+        self.recog_status_text = tk.Text(status_frame, height=5, wrap=tk.WORD)
         self.recog_status_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.recog_status_text.config(state=tk.DISABLED)
         
-        # Initialize camera list - MOVED after creating status text widget
+        # Initialize camera list
         self._refresh_camera_list()
+    
+    # Also enhance the refresh method with better error handling
+    def _refresh_reg_camera_list(self):
+        """Refresh the list of available cameras for registration tab"""
+        # Check available cameras (up to index 5 should be enough for most systems)
+        available_cameras = []
+        for i in range(5):
+            try:
+                cap = cv2.VideoCapture(i)
+                if cap.isOpened():
+                    available_cameras.append(str(i))
+                cap.release()
+            except Exception as e:
+                print(f"Error checking camera {i}: {str(e)}")
+        
+        # Update combobox values
+        if available_cameras:
+            self.reg_camera_combobox['values'] = available_cameras
+            self.reg_camera_var.set(available_cameras[0])  # Set to first available camera
+        else:
+            self.reg_camera_combobox['values'] = ["0"]  # Default to camera 0
+            self.reg_camera_var.set("0")
+        
+        # Update status
+        self._update_status(f"Found {len(available_cameras)} camera(s)\n")
     
     # Also make the refresh method more robust
     def _refresh_camera_list(self):
@@ -320,21 +368,38 @@ class AttendanceSystemApp:
         # Disable buttons during collection
         self.collect_btn.config(state=tk.DISABLED)
         self.register_btn.config(state=tk.DISABLED)
+        self.start_preview_btn.config(state=tk.DISABLED)
+        
+        # Stop any ongoing preview
+        self._stop_camera()
         
         # Run collection in a separate thread
         def collection_thread():
-            collector = face_sample_collector.FaceSampleCollector(required_samples=samples)
-            result = collector.collect_face_samples(registration_number, camera_index=camera_index)
-            
-            # Re-enable buttons
-            self.root.after(0, lambda: self.collect_btn.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.register_btn.config(state=tk.NORMAL))
-            
-            if result:
-                self.root.after(0, lambda: self._update_status(f"Successfully collected {samples} samples for {registration_number}.\n"))
-                self.root.after(0, lambda: self._update_status("You can now register this person using the 'Register Person' button.\n"))
-            else:
-                self.root.after(0, lambda: self._update_status("Sample collection interrupted or failed.\n"))
+            try:
+                success = self.collector.collect_face_samples(
+                    registration_number, 
+                    camera_index=camera_index,
+                    preview_widget=self.reg_preview_canvas,
+                    convert_func=self._convert_cv_to_tkimage,
+                    app_root=self.root
+                )
+                
+                # Re-enable buttons
+                self.root.after(0, lambda: self.collect_btn.config(state=tk.NORMAL))
+                self.root.after(0, lambda: self.register_btn.config(state=tk.NORMAL))
+                self.root.after(0, lambda: self.start_preview_btn.config(state=tk.NORMAL))
+                self.root.after(0, lambda: self.start_preview_btn.config(text="Start Preview"))
+                
+                if success:
+                    self.root.after(0, lambda: self._update_status(f"Successfully collected {samples} samples for {registration_number}.\n"))
+                    self.root.after(0, lambda: self._update_status("You can now register this person using the 'Register Person' button.\n"))
+                else:
+                    self.root.after(0, lambda: self._update_status("Sample collection interrupted or failed.\n"))
+            except Exception as e:
+                self.root.after(0, lambda: self._update_status(f"Error during collection: {str(e)}\n"))
+                self.root.after(0, lambda: self.collect_btn.config(state=tk.NORMAL))
+                self.root.after(0, lambda: self.register_btn.config(state=tk.NORMAL))
+                self.root.after(0, lambda: self.start_preview_btn.config(state=tk.NORMAL))
         
         thread = threading.Thread(target=collection_thread)
         thread.daemon = True
@@ -374,6 +439,17 @@ class AttendanceSystemApp:
         self.status_text.config(state=tk.DISABLED)
     
     # Recognition tab functions
+    def _toggle_recognition(self):
+        """Toggle between starting and stopping recognition"""
+        if self.recognition_active:
+            # Stop recognition
+            self.stop_recognition = True
+            self.start_recog_btn.config(state=tk.DISABLED)
+            self._update_recog_status("Stopping recognition...\n")
+        else:
+            # Start recognition
+            self._start_recognition()
+    
     def _start_recognition(self):
         """Start face recognition process"""
         try:
@@ -393,27 +469,61 @@ class AttendanceSystemApp:
         # Update status
         self._update_recog_status("Starting face recognition...\n")
         self._update_recog_status(f"Camera: {camera_index}, Threshold: {threshold}, Mark Attendance: {mark_attendance}\n")
-        self._update_recog_status("Press 'q' in the recognition window to stop.\n")
         
-        # Disable button during recognition
-        self.start_recog_btn.config(state=tk.DISABLED)
+        # Reset stop flag and set active flag
+        self.stop_recognition = False
+        self.recognition_active = True
+        
+        # Update button text
+        self.start_recog_btn.config(text="Stop Recognition")
+        
+        # Disable preview button during recognition
+        self.start_recog_preview_btn.config(state=tk.DISABLED)
+        
+        # Stop any ongoing preview
+        self._stop_camera()
         
         # Run recognition in a separate thread
         def recognition_thread():
-            recognizer = recognition_system.FaceRecognitionSystem(threshold=threshold)
-            recognizer.recognize_from_webcam(camera_index=camera_index, mark_attendance=mark_attendance)
-            
-            # Re-enable button
-            self.root.after(0, lambda: self.start_recog_btn.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self._update_recog_status("Recognition stopped.\n"))
-            
-            # Refresh reports tab if attendance was marked
-            if mark_attendance:
-                self.root.after(0, lambda: self._load_attendance_report())
+            try:
+                recognizer = recognition_system.FaceRecognitionSystem(threshold=threshold)
+                recognizer.recognize_from_webcam(
+                    camera_index=camera_index,
+                    mark_attendance=mark_attendance,
+                    preview_widget=self.recog_preview_canvas,
+                    convert_func=self._convert_cv_to_tkimage,
+                    app_root=self.root,
+                    status_callback=self._update_recog_status_thread_safe,
+                    stop_flag=lambda: self.stop_recognition  # Pass the stop flag function
+                )
+                
+                # Reset flags and update UI
+                self.recognition_active = False
+                self.stop_recognition = False
+                
+                # Re-enable buttons
+                self.root.after(0, lambda: self.start_recog_btn.config(state=tk.NORMAL, text="Start Recognition"))
+                self.root.after(0, lambda: self.start_recog_preview_btn.config(state=tk.NORMAL))
+                self.root.after(0, lambda: self._update_recog_status("Recognition stopped.\n"))
+                
+                # Refresh reports tab if attendance was marked
+                if mark_attendance:
+                    self.root.after(0, lambda: self._load_attendance_report())
+            except Exception as e:
+                # Handle errors
+                self.recognition_active = False
+                self.stop_recognition = False
+                self.root.after(0, lambda: self._update_recog_status(f"Error during recognition: {str(e)}\n"))
+                self.root.after(0, lambda: self.start_recog_btn.config(state=tk.NORMAL, text="Start Recognition"))
+                self.root.after(0, lambda: self.start_recog_preview_btn.config(state=tk.NORMAL))
         
         thread = threading.Thread(target=recognition_thread)
         thread.daemon = True
         thread.start()
+    
+    def _update_recog_status_thread_safe(self, message):
+        """Update recognition status text widget from a thread"""
+        self.root.after(0, lambda: self._update_recog_status(message))
     
     def _update_recog_status(self, message):
         """Update recognition status text widget"""
@@ -528,21 +638,155 @@ class AttendanceSystemApp:
             messagebox.showerror("Error", f"Failed to load attendance data: {str(e)}")
     
     def _get_all_registered_persons(self):
-        """Get all registered persons from metadata"""
+        """Get all registered persons from the database"""
         persons = set()
-        metadata_file = os.path.join('face_db', 'metadata.json')
         
-        if os.path.exists(metadata_file):
-            try:
-                with open(metadata_file, 'r') as f:
-                    metadata = json.load(f)
-                    if "persons" in metadata:
-                        for person_id in metadata["persons"]:
-                            persons.add(person_id)
-            except:
-                pass
+        try:
+            # Use the database manager to get all registered persons
+            if self.db_manager:
+                person_data = self.db_manager.list_registered_persons()
+                for person_id in person_data.keys():
+                    persons.add(person_id)
+            else:
+                print("Warning: Database manager not initialized, cannot get registered persons")
+        except Exception as e:
+            print(f"Error getting registered persons: {e}")
         
         return persons
+    
+    # New utility functions for camera preview
+    def _convert_cv_to_tkimage(self, cv_image):
+        """Convert OpenCV image to Tkinter compatible image"""
+        cv_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(cv_image)
+        return ImageTk.PhotoImage(image=pil_image)
+    
+    def _stop_camera(self):
+        """Stop any active camera preview"""
+        self.camera_active = False
+        if self.preview_after_id:
+            self.root.after_cancel(self.preview_after_id)
+            self.preview_after_id = None
+            
+        if self.camera_cap and self.camera_cap.isOpened():
+            self.camera_cap.release()
+            self.camera_cap = None
+        
+        # Update button text if necessary
+        if hasattr(self, 'start_preview_btn'):
+            self.start_preview_btn.config(text="Start Preview")
+        if hasattr(self, 'start_recog_preview_btn'):
+            self.start_recog_preview_btn.config(text="Start Preview")
+    
+    def _on_tab_change(self, event):
+        """Handle tab changes - stop camera when leaving tab"""
+        self._stop_camera()
+        
+        # Also stop recognition if active
+        if self.recognition_active:
+            self.stop_recognition = True
+    
+    def _on_closing(self):
+        """Handle application closing"""
+        self._stop_camera()
+        
+        # Make sure to stop any running recognition
+        self.stop_recognition = True
+        
+        # Give a moment for threads to clean up
+        if self.recognition_active:
+            self._update_recog_status("Shutting down recognition system...\n")
+            self.root.after(500, self.root.destroy)
+        else:
+            self.root.destroy()
+    
+    def _start_reg_preview(self):
+        """Start camera preview in registration tab"""
+        if self.camera_active:
+            self._stop_camera()
+            self.start_preview_btn.config(text="Start Preview")
+            return
+        
+        try:
+            camera_index = int(self.reg_camera_var.get())
+            self.camera_cap = cv2.VideoCapture(camera_index)
+            
+            if not self.camera_cap.isOpened():
+                self._update_status(f"Error: Could not open camera {camera_index}.")
+                return
+                
+            self.camera_active = True
+            self._update_reg_preview()
+            self.start_preview_btn.config(text="Stop Preview")
+            
+        except Exception as e:
+            self._update_status(f"Error starting camera preview: {str(e)}")
+    
+    def _update_reg_preview(self):
+        """Update registration tab preview with camera frame"""
+        if not self.camera_active or not self.camera_cap or not self.camera_cap.isOpened():
+            return
+            
+        ret, frame = self.camera_cap.read()
+        if ret:
+            # Get canvas dimensions
+            canvas_width = self.reg_preview_canvas.winfo_width()
+            canvas_height = self.reg_preview_canvas.winfo_height()
+            
+            # Resize frame to fit canvas if dimensions are valid
+            if canvas_width > 1 and canvas_height > 1:
+                frame = cv2.resize(frame, (canvas_width, canvas_height))
+                
+            # Convert frame to Tkinter image
+            self.reg_preview_img = self._convert_cv_to_tkimage(frame)
+            self.reg_preview_canvas.create_image(0, 0, image=self.reg_preview_img, anchor=tk.NW)
+        
+        # Continue updating
+        self.preview_after_id = self.root.after(33, self._update_reg_preview)  # ~30 FPS
+    
+    def _start_recog_preview(self):
+        """Start camera preview in recognition tab"""
+        if self.camera_active:
+            self._stop_camera()
+            self.start_recog_preview_btn.config(text="Start Preview")
+            return
+        
+        try:
+            camera_index = int(self.camera_var.get())
+            self.camera_cap = cv2.VideoCapture(camera_index)
+            
+            if not self.camera_cap.isOpened():
+                self._update_recog_status(f"Error: Could not open camera {camera_index}.")
+                return
+                
+            self.camera_active = True
+            self._update_recog_preview()
+            self.start_recog_preview_btn.config(text="Stop Preview")
+            
+        except Exception as e:
+            self._update_recog_status(f"Error starting camera preview: {str(e)}")
+    
+    def _update_recog_preview(self):
+        """Update recognition tab preview with camera frame"""
+        if not self.camera_active or not self.camera_cap or not self.camera_cap.isOpened():
+            return
+            
+        ret, frame = self.camera_cap.read()
+        if ret:
+            # Get canvas dimensions
+            canvas_width = self.recog_preview_canvas.winfo_width()
+            canvas_height = self.recog_preview_canvas.winfo_height()
+            
+            # Resize frame to fit canvas if dimensions are valid
+            if canvas_width > 1 and canvas_height > 1:
+                frame = cv2.resize(frame, (canvas_width, canvas_height))
+                
+            # Convert frame to Tkinter image
+            self.recog_preview_img = self._convert_cv_to_tkimage(frame)
+            self.recog_preview_canvas.create_image(0, 0, image=self.recog_preview_img, anchor=tk.NW)
+        
+        # Continue updating
+        self.preview_after_id = self.root.after(33, self._update_recog_preview)  # ~30 FPS
 
 # Run the application
 if __name__ == "__main__":

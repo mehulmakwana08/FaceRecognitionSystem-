@@ -3,7 +3,6 @@ import cv2
 import numpy as np
 import insightface
 from insightface.app import FaceAnalysis
-import glob
 import json
 from datetime import datetime
 import csv
@@ -24,128 +23,102 @@ class FaceRecognitionSystem:
         self.db_dir = db_dir
         self.threshold = threshold
         
-        # Load person database
-        self.person_db = self._load_person_database()
+        # Ensure connection to Milvus
+        try:
+            connections.connect("default", host="localhost", port="19530")
+            print("Connected to Milvus server")
+        except Exception as e:
+            raise ConnectionError(f"Failed to connect to Milvus: {e}. Please ensure Milvus server is running.")
         
-        print(f"Loaded database with {len(self.person_db)} persons.")
+        print("Face recognition system initialized with Milvus vector database.")
     
     def _load_person_database(self):
-        """Load all person embeddings from the database"""
+        """Load person metadata from Milvus"""
         person_db = {}
         
-        # Check if database directory exists
-        if not os.path.exists(self.db_dir):
-            print(f"Database directory {self.db_dir} not found.")
+        try:
+            if utility.has_collection("face_datastore"):
+                collection = Collection("face_datastore")
+                collection.load()
+                
+                results = collection.query(
+                    expr="is_embedding == 0",  # 0 instead of False
+                    output_fields=["registration_number", "full_name"]
+                )
+                
+                for record in results:
+                    reg_num = record["registration_number"]
+                    person_db[reg_num] = {
+                        "full_name": record["full_name"]
+                    }
+                
             return person_db
-        
-        # Load metadata if available
-        metadata_file = os.path.join(self.db_dir, 'metadata.json')
-        metadata = {}
-        if os.path.exists(metadata_file):
-            with open(metadata_file, 'r') as f:
-                metadata = json.load(f)
-        
-        # Iterate through all person directories
-        for registration_number in os.listdir(self.db_dir):
-            person_dir = os.path.join(self.db_dir, registration_number)
             
-            # Skip metadata file and non-directories
-            if not os.path.isdir(person_dir):
-                continue
-            
-            # Get all embedding files for this person
-            embedding_files = glob.glob(os.path.join(person_dir, "*.npy"))
-            
-            if embedding_files:
-                # Load all embeddings for this person
-                embeddings = [np.load(f) for f in embedding_files]
-                
-                # Get person name from metadata if available
-                name = registration_number
-                if "persons" in metadata and registration_number in metadata["persons"]:
-                    name = metadata["persons"][registration_number].get("name", registration_number)
-                
-                person_db[registration_number] = {
-                    "name": name,
-                    "embeddings": embeddings
-                }
-        
-        return person_db
+        except Exception as e:
+            print(f"Error loading metadata from Milvus: {e}")
+            return {}
     
     def _find_best_match(self, face_embedding):
         """Find the best matching person using Milvus"""
         try:
-            # Try to use Milvus for vector search
-            connections.connect("default", host="localhost", port="19530")
-            if utility.has_collection("face_embeddings"):
-                collection = Collection("face_embeddings")
-                collection.load()
-                
-                # Search parameters
-                search_params = {"metric_type": "COSINE", "params": {"nprobe": 10}}
-                
-                # Search for similar faces
-                results = collection.search(
-                    data=[face_embedding], 
-                    anns_field="embedding",
-                    param=search_params,
-                    limit=1,
-                    output_fields=["registration_number"]
-                )
-                
-                if len(results) > 0 and len(results[0]) > 0:
-                    top_match = results[0][0]
-                    similarity = top_match.score  # COSINE similarity
-                    reg_num = top_match.entity.get("registration_number")
-                    
-                    # Load metadata to get name
-                    metadata = self._load_person_database()
-                    name = metadata.get(reg_num, {}).get("full_name", "Unknown")
-                    
-                    if similarity >= self.threshold:
-                        return reg_num, name, similarity
-                
+            # Use Milvus for vector search
+            if not utility.has_collection("face_datastore"):
+                print("No face datastore collection found in Milvus")
                 return None, None, 0.0
+                
+            collection = Collection("face_datastore")
+            collection.load()
+            
+            # Search parameters
+            search_params = {"metric_type": "COSINE", "params": {"nprobe": 10}}
+            
+            # Search for similar faces
+            results = collection.search(
+                data=[face_embedding], 
+                anns_field="embedding",
+                param=search_params,
+                limit=1,
+                expr="is_embedding == 1",  # 1 instead of True
+                output_fields=["registration_number"]
+            )
+            
+            if len(results) > 0 and len(results[0]) > 0:
+                top_match = results[0][0]
+                similarity = top_match.score  # COSINE similarity
+                reg_num = top_match.entity.get("registration_number")
+                
+                # Load metadata to get name
+                metadata = self._load_person_database()
+                name = metadata.get(reg_num, {}).get("full_name", "Unknown")
+                
+                if similarity >= self.threshold:
+                    return reg_num, name, similarity
+            
+            return None, None, 0.0
                 
         except Exception as e:
             print(f"Milvus search failed: {e}")
-            print("Falling back to file-based search")
-        
-        # Fall back to original file-based method
-        best_match_id = None
-        best_match_name = None
-        best_similarity = -1
-        
-        for registration_number, person_data in self.person_db.items():
-            # Compare with all embeddings for this person
-            similarities = [self._calculate_similarity(face_embedding, ref_emb) 
-                           for ref_emb in person_data["embeddings"]]
-            
-            # Use the highest similarity score
-            max_similarity = max(similarities) if similarities else 0
-            
-            # Update best match if this is better
-            if max_similarity > best_similarity:
-                best_similarity = max_similarity
-                best_match_id = registration_number
-                best_match_name = person_data["name"]
-        
-        # Apply threshold
-        if best_similarity < (1 - self.threshold):
-            return None, None, best_similarity
-        
-        return best_match_id, best_match_name, best_similarity
+            return None, None, 0.0
     
-    def _calculate_similarity(self, emb1, emb2):
-        """Calculate cosine similarity between two embeddings"""
-        return np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
-    
-    def recognize_from_webcam(self, camera_index=0, mark_attendance=True):
-        """Run face recognition on webcam feed and optionally mark attendance"""
+    def recognize_from_webcam(self, camera_index=0, mark_attendance=True, preview_widget=None, convert_func=None, app_root=None, status_callback=None, stop_flag=None):
+        """Run face recognition on webcam feed and optionally mark attendance
+        
+        Args:
+            camera_index: Camera device index
+            mark_attendance: Whether to record attendance
+            preview_widget: Tkinter widget for displaying camera preview
+            convert_func: Function to convert cv2 image to tkinter format
+            app_root: Tkinter root window for thread-safe operations
+            status_callback: Function to call with status updates
+            stop_flag: A callable that returns True when recognition should stop
+        """
         # Initialize webcam with specified camera index
         cap = cv2.VideoCapture(camera_index)
         if not cap.isOpened():
-            print(f"Error: Could not open camera {camera_index}.")
+            error_msg = f"Error: Could not open camera {camera_index}."
+            print(error_msg)
+            if status_callback:
+                status_callback(error_msg + "\n")
             return
         
         # For attendance tracking
@@ -162,12 +135,26 @@ class FaceRecognitionSystem:
                     writer = csv.writer(f)
                     writer.writerow(['ID', 'Name', 'Time', 'Status'])
         
-        print("Starting face recognition. Press 'q' to quit.")
+        print("Starting face recognition. Use Stop Recognition button to stop.")
+        if status_callback:
+            status_callback("Starting face recognition. Use Stop Recognition button to stop.\n")
         
-        while True:
+        # Variable to track if we should continue running
+        running = True
+        
+        while running:
+            # Check if we should stop
+            if stop_flag and stop_flag():
+                running = False
+                if status_callback:
+                    status_callback("Recognition stopped by user request.\n")
+                break
+                
             ret, frame = cap.read()
             if not ret:
                 print("Error: Failed to capture image from webcam.")
+                if status_callback:
+                    status_callback("Error: Failed to capture image from webcam.\n")
                 break
             
             # Create a copy for display
@@ -213,7 +200,10 @@ class FaceRecognitionSystem:
                             writer.writerow([registration_number, full_name, now, 'Present'])
                         
                         recognized_persons.add(registration_number)
-                        print(f"Marked attendance for {full_name} ({registration_number})")
+                        recognition_msg = f"Marked attendance for {full_name} ({registration_number})\n"
+                        print(recognition_msg.strip())
+                        if status_callback:
+                            status_callback(recognition_msg)
                 else:
                     # Unknown - draw red box
                     cv2.rectangle(display_frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 0, 255), 2)
@@ -238,20 +228,52 @@ class FaceRecognitionSystem:
                 2
             )
             
-            # Display the frame
-            cv2.imshow("Face Recognition", display_frame)
-            
-            # Break on 'q' key
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            # Display the frame - either in Tkinter widget or OpenCV window
+            if preview_widget and convert_func and app_root:
+                # Get widget dimensions
+                if hasattr(preview_widget, 'winfo_width'):
+                    width = preview_widget.winfo_width()
+                    height = preview_widget.winfo_height()
+                    if width > 10 and height > 10:  # Avoid invalid dimensions
+                        display_frame = cv2.resize(display_frame, (width, height))
+                
+                # Convert to Tkinter format and display
+                img = convert_func(display_frame)
+                
+                # Update in a thread-safe manner
+                app_root.after(0, lambda: preview_widget.create_image(0, 0, image=img, anchor='nw'))
+                app_root.after(0, lambda: setattr(preview_widget, 'image', img))
+                
+                # Process Tkinter events to keep UI responsive
+                try:
+                    app_root.update_idletasks()
+                    app_root.update()
+                except:
+                    # If app is being destroyed or there's an error, stop the loop
+                    running = False
+                    break
+            else:
+                cv2.imshow("Face Recognition", display_frame)
+                # Check for quit key (still keep this for standalone mode)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    running = False
+                
+            # Check if preview_widget still exists
+            if preview_widget and not preview_widget.winfo_exists():
+                running = False
         
         # Release resources
         cap.release()
-        cv2.destroyAllWindows()
+        if not (preview_widget and convert_func):  # Only destroy windows if using OpenCV display
+            cv2.destroyAllWindows()
         
         if mark_attendance and recognized_persons:
-            print(f"\nAttendance summary - {len(recognized_persons)} persons marked present")
-            print(f"Attendance saved to {attendance_file}")
+            summary = f"\nAttendance summary - {len(recognized_persons)} persons marked present\n"
+            summary += f"Attendance saved to {attendance_file}\n"
+            print(summary.strip())
+            if status_callback:
+                status_callback(summary)
 
 # Example usage
 if __name__ == "__main__":

@@ -21,7 +21,16 @@ class FaceSampleCollector:
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
     
-    def collect_face_samples(self, registration_number, camera_index=0):
+    def collect_face_samples(self, registration_number, camera_index=0, preview_widget=None, convert_func=None, app_root=None):
+        """Start face sample collection process
+        
+        Args:
+            registration_number: Unique ID for the person
+            camera_index: Camera device index
+            preview_widget: Tkinter widget for displaying camera preview
+            convert_func: Function to convert cv2 image to tkinter format
+            app_root: Tkinter root window for thread-safe operations
+        """
         # Make sure registration_number is always a string
         registration_number = str(registration_number)
         
@@ -46,7 +55,10 @@ class FaceSampleCollector:
         print(f"Collecting {self.required_samples} face samples for {registration_number} using camera {camera_index}...")
         print("Please look at the camera and slightly change your head position for each capture.")
         
-        while collected_samples < self.required_samples:
+        # For checking if process should continue
+        should_continue = True
+        
+        while collected_samples < self.required_samples and should_continue:
             ret, frame = cap.read()
             if not ret:
                 print("Error: Failed to capture image from webcam.")
@@ -96,8 +108,27 @@ class FaceSampleCollector:
                 2
             )
             
-            # Display the frame
-            cv2.imshow("Face Sample Collection", display_frame)
+            # Display the frame - either in Tkinter widget or OpenCV window
+            if preview_widget and convert_func and app_root:
+                # Get widget dimensions
+                if hasattr(preview_widget, 'winfo_width'):
+                    width = preview_widget.winfo_width()
+                    height = preview_widget.winfo_height()
+                    if width > 10 and height > 10:  # Avoid invalid dimensions
+                        display_frame = cv2.resize(display_frame, (width, height))
+                
+                # Convert to Tkinter format and display
+                img = convert_func(display_frame)
+                
+                # Update in a thread-safe manner
+                app_root.after(0, lambda: preview_widget.create_image(0, 0, image=img, anchor='nw'))
+                app_root.after(0, lambda: setattr(preview_widget, 'image', img))
+                
+                # Process Tkinter events to keep UI responsive
+                app_root.update_idletasks()
+                app_root.update()
+            else:
+                cv2.imshow("Face Sample Collection", display_frame)
             
             # Capture face when timer is up
             if faces and (current_time - last_capture_time >= 3):
@@ -139,14 +170,19 @@ class FaceSampleCollector:
                     last_capture_time = current_time
                     print(f"Captured sample {collected_samples}/{self.required_samples}")
             
-            # Break on ESC key
+            # Break on ESC key or window close
             key = cv2.waitKey(1) & 0xFF
             if key == 27:  # ESC key
-                break
+                should_continue = False
+            
+            # Also check for preview_widget valid (in case app is closing)
+            if preview_widget and not preview_widget.winfo_exists():
+                should_continue = False
         
         # Release resources
         cap.release()
-        cv2.destroyAllWindows()
+        if not (preview_widget and convert_func):  # Only destroy windows if using OpenCV display
+            cv2.destroyAllWindows()
         
         if collected_samples == self.required_samples:
             print(f"Successfully collected {collected_samples} samples for {registration_number}")
