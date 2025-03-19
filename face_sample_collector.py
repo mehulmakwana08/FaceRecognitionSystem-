@@ -5,6 +5,8 @@ from insightface.app import FaceAnalysis
 import numpy as np
 import time
 import uuid
+import datetime
+from pymilvus import utility, FieldSchema, CollectionSchema, DataType, Collection, connections  # Add these import statements
 
 class FaceSampleCollector:
     def __init__(self, save_dir='face_samples', required_samples=5):
@@ -20,7 +22,12 @@ class FaceSampleCollector:
             os.makedirs(save_dir)
     
     def collect_face_samples(self, registration_number, camera_index=0):
-        """Collect multiple face samples from webcam"""
+        # Make sure registration_number is always a string
+        registration_number = str(registration_number)
+        
+        # Ensure the save directory exists
+        os.makedirs(self.save_dir, exist_ok=True)
+        
         # Create person directory
         person_dir = os.path.join(self.save_dir, registration_number)
         if not os.path.exists(person_dir):
@@ -147,6 +154,101 @@ class FaceSampleCollector:
         else:
             print(f"Collection interrupted. Collected {collected_samples}/{self.required_samples} samples.")
             return False
+
+    def register_person(self, registration_number, full_name=None, mobile_number=None):
+        """Register a person using multiple face samples"""
+        # ... existing code ...
+        
+        # Create collection if it doesn't exist
+        if not utility.has_collection("face_embeddings"):
+            dim = 512  # InsightFace embedding dimension
+            fields = [
+                FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=100),
+                FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim),
+                FieldSchema(name="registration_number", dtype=DataType.VARCHAR, max_length=100),
+                FieldSchema(name="name", dtype=DataType.VARCHAR, max_length=100)
+            ]
+            schema = CollectionSchema(fields=fields, description="Face embeddings")
+            collection = Collection(name="face_embeddings", schema=schema)
+            
+            # Create index for vector search
+            index_params = {"index_type": "IVF_FLAT", "metric_type": "L2", "params": {"nlist": 1024}}
+            collection.create_index(field_name="embedding", index_params=index_params)
+        else:
+            collection = Collection(name="face_embeddings")
+            collection.load()
+        
+        # Insert embeddings into database
+        embeddings = []
+        person_dir = os.path.join(self.save_dir, registration_number)
+        embedding_files = [os.path.join(person_dir, f) for f in os.listdir(person_dir) if f.endswith('.npy')]
+        for i, embedding_file in enumerate(embedding_files):
+            embedding = np.load(embedding_file)
+            entity_id = f"{registration_number}_{i}"
+            embeddings.append([entity_id, embedding, registration_number, full_name or ""])
+        
+        collection.insert(embeddings)
+
+    def _load_person_database(self):
+        """Load person metadata from Milvus database"""
+        person_db = {}
+        
+        # Connect to Milvus
+        try:
+            connections.connect("default", host="localhost", port="19530")
+            
+            # Get metadata from Milvus
+            if utility.has_collection("face_embeddings"):
+                collection = Collection("face_embeddings")
+                collection.load()
+                
+                # Get all registration numbers
+                expr = "registration_number != ''"
+                results = collection.query(expr=expr, output_fields=["registration_number", "name"])
+                
+                # Group by registration number
+                for result in results:
+                    reg_num = result["registration_number"]
+                    name = result["name"]
+                    
+                    if reg_num not in person_db:
+                        person_db[reg_num] = {
+                            "name": name,
+                            "registration_date": datetime.now().strftime("%Y-%m-%d"),
+                        }
+            
+            return person_db
+            
+        except Exception as e:
+            print(f"Error connecting to Milvus: {e}")
+            return {}
+
+    def _find_best_match(self, face_embedding):
+        """Find the best matching person using Milvus vector search"""
+        try:
+            collection = Collection("face_embeddings")
+            search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
+            
+            results = collection.search(
+                data=[face_embedding], 
+                anns_field="embedding", 
+                param=search_params,
+                limit=1,
+                output_fields=["registration_number", "name"]
+            )
+            
+            if len(results) > 0 and len(results[0]) > 0:
+                match = results[0][0]
+                similarity = 1.0 - match.distance / 2  # Convert L2 distance to similarity
+                
+                if similarity >= self.threshold:
+                    return match.entity.get("registration_number"), match.entity.get("name"), similarity
+                    
+            return None, None, 0.0
+                
+        except Exception as e:
+            print(f"Error during face matching: {e}")
+            return None, None, 0.0
 
 # Example usage
 if __name__ == "__main__":

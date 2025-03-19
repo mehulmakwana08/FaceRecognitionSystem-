@@ -7,6 +7,7 @@ import glob
 import json
 from datetime import datetime
 import csv
+from pymilvus import connections, Collection, utility
 
 class FaceRecognitionSystem:
     def __init__(self, db_dir='face_db', threshold=0.5):
@@ -72,7 +73,45 @@ class FaceRecognitionSystem:
         return person_db
     
     def _find_best_match(self, face_embedding):
-        """Find the best matching person for a given face embedding"""
+        """Find the best matching person using Milvus"""
+        try:
+            # Try to use Milvus for vector search
+            connections.connect("default", host="localhost", port="19530")
+            if utility.has_collection("face_embeddings"):
+                collection = Collection("face_embeddings")
+                collection.load()
+                
+                # Search parameters
+                search_params = {"metric_type": "COSINE", "params": {"nprobe": 10}}
+                
+                # Search for similar faces
+                results = collection.search(
+                    data=[face_embedding], 
+                    anns_field="embedding",
+                    param=search_params,
+                    limit=1,
+                    output_fields=["registration_number"]
+                )
+                
+                if len(results) > 0 and len(results[0]) > 0:
+                    top_match = results[0][0]
+                    similarity = top_match.score  # COSINE similarity
+                    reg_num = top_match.entity.get("registration_number")
+                    
+                    # Load metadata to get name
+                    metadata = self._load_person_database()
+                    name = metadata.get(reg_num, {}).get("full_name", "Unknown")
+                    
+                    if similarity >= self.threshold:
+                        return reg_num, name, similarity
+                
+                return None, None, 0.0
+                
+        except Exception as e:
+            print(f"Milvus search failed: {e}")
+            print("Falling back to file-based search")
+        
+        # Fall back to original file-based method
         best_match_id = None
         best_match_name = None
         best_similarity = -1

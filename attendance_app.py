@@ -44,8 +44,10 @@ class AttendanceSystemApp:
         # Initialize process tracking
         self.current_process = None
         
-        # Initialize managers
-        self.db_manager = face_database_manager.FaceDatabaseManager()
+        # Use the same directory for both components
+        samples_dir = 'face_samples'
+        self.collector = face_sample_collector.FaceSampleCollector(save_dir=samples_dir)
+        self.db_manager = face_database_manager.FaceDatabaseManager(samples_dir=samples_dir)
     
     def _init_registration_tab(self):
         """Initialize the Registration tab"""
@@ -422,29 +424,43 @@ class AttendanceSystemApp:
     
     # Management tab functions
     def _refresh_person_list(self):
-        """Refresh the person list in the management tab"""
-        # Clear current items
+        """Refresh the list of registered persons in the management tab"""
+        # Clear the current list
         for item in self.person_tree.get_children():
             self.person_tree.delete(item)
         
-        # Load metadata
-        metadata_file = os.path.join('face_db', 'metadata.json')
-        if os.path.exists(metadata_file):
-            try:
-                with open(metadata_file, 'r') as f:
-                    metadata = json.load(f)
+        try:
+            # Debug statement
+            print("Refreshing person list...")
+            
+            # Get the list of registered persons
+            persons = self.db_manager.list_registered_persons()
+            print(f"Retrieved {len(persons)} persons from database")
+            
+            # Add them to the tree view
+            for reg_num, info in persons.items():
+                full_name = info.get("full_name", "")
+                mobile = info.get("mobile_number", "")
+                sample_count = info.get("sample_count", "0")
+                reg_date = info.get("registration_date", "")
+                
+                print(f"Adding to tree: {reg_num}, {full_name}, {mobile}, {sample_count}, {reg_date}")
+                
+                self.person_tree.insert("", tk.END, values=(
+                    reg_num,
+                    full_name,
+                    mobile,
+                    sample_count,
+                    reg_date
+                ))
+            
+            print(f"Added {len(persons)} entries to the tree view")
                     
-                    if "persons" in metadata:
-                        for person_id, info in metadata["persons"].items():
-                            self.person_tree.insert("", tk.END, values=(
-                                person_id,
-                                info.get("name", person_id),
-                                info.get("mobile", ""),
-                                info.get("sample_count", "?"),
-                                info.get("registration_date", "Unknown")
-                            ))
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to load metadata: {str(e)}")
+        except Exception as e:
+            print(f"Error in _refresh_person_list: {e}")
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Error", f"Failed to load registered persons: {str(e)}")
     
     def _remove_selected_person(self):
         """Remove selected person from the database"""

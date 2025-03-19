@@ -1,11 +1,8 @@
 import os
-import cv2
-import numpy as np
-import insightface
-from insightface.app import FaceAnalysis
 import glob
-import json
-import shutil
+import numpy as np
+from datetime import datetime
+from insightface.app import FaceAnalysis
 from pymilvus import connections, FieldSchema, CollectionSchema, DataType, Collection, utility
 
 class FaceDatabaseManager:
@@ -14,111 +11,397 @@ class FaceDatabaseManager:
         self.app.prepare(ctx_id=0, det_size=(640, 640))
         
         self.samples_dir = samples_dir
-        self.db_dir = db_dir
         
-        connections.connect("default", host="localhost", port="19530")
-        # Create directories if they don't exist
-        for directory in [samples_dir, db_dir]:
-            if not os.path.exists(directory):
-                os.makedirs(directory)
+        # Connect to Milvus
+        try:
+            connections.connect("default", host="localhost", port="19530")
+            print("Connected to Milvus server")
+            
+            # Create single collection if it doesn't exist
+            if not utility.has_collection("face_datastore"):
+                self._create_datastore_collection()
+                
+        except Exception as e:
+            raise ConnectionError(f"Failed to connect to Milvus: {e}. Please ensure Milvus server is running.")
+    
+    def _create_datastore_collection(self):
+        """Create single Milvus collection for all face recognition data"""
+        fields = [
+            FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=100),
+            FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=512),
+            FieldSchema(name="registration_number", dtype=DataType.VARCHAR, max_length=50),
+            FieldSchema(name="full_name", dtype=DataType.VARCHAR, max_length=100),
+            FieldSchema(name="mobile_number", dtype=DataType.VARCHAR, max_length=20),
+            FieldSchema(name="registration_date", dtype=DataType.VARCHAR, max_length=20),
+            FieldSchema(name="is_embedding", dtype=DataType.INT8),  # Using INT8 instead of BOOLEAN (0=false, 1=true)
+            FieldSchema(name="sample_count", dtype=DataType.INT32),  # Added sample_count field
+            FieldSchema(name="sample_index", dtype=DataType.INT32)   # Sample index for embeddings, -1 for metadata
+        ]
+        schema = CollectionSchema(fields=fields, description="Face recognition datastore")
         
-        # Load existing database metadata
-        self.metadata_file = os.path.join(db_dir, 'metadata.json')
-        self.metadata = self._load_metadata()
+        collection = Collection(name="face_datastore", schema=schema)
+        
+        index_params = {
+            "index_type": "IVF_FLAT",
+            "metric_type": "COSINE",
+            "params": {"nlist": 128}
+        }
+        collection.create_index(field_name="embedding", index_params=index_params)
+        print("Face datastore collection created successfully")
     
     def _load_metadata(self):
-        """Load metadata from JSON file or create if it doesn't exist"""
-        if os.path.exists(self.metadata_file):
-            with open(self.metadata_file, 'r') as f:
-                return json.load(f)
-        else:
-            return {"persons": {}}
+        """Load all person metadata from Milvus"""
+        try:
+            metadata = {}
+            collection = Collection("face_datastore")
+            collection.load()
+            
+            results = collection.query(
+                expr="is_embedding == 0",  # 0 instead of False
+                output_fields=["registration_number", "full_name", "mobile_number", "registration_date", "sample_count"]
+            )
+            
+            for record in results:
+                reg_num = record["registration_number"]
+                metadata[reg_num] = {
+                    "full_name": record["full_name"],
+                    "mobile_number": record["mobile_number"],
+                    "registration_date": record["registration_date"],
+                    "sample_count": record["sample_count"]
+                }
+                
+            return metadata
+            
+        except Exception as e:
+            print(f"Error loading metadata from Milvus: {e}")
+            return {}
     
-    def _save_metadata(self):
-        """Save metadata to JSON file"""
-        with open(self.metadata_file, 'w') as f:
-            json.dump(self.metadata, f, indent=2)
+    def _save_metadata(self, metadata):
+        """Save person metadata to Milvus"""
+        try:
+            collection = Collection("face_datastore")
+            
+            # Prepare data for insertion
+            reg_numbers = []
+            full_names = []
+            mobile_numbers = []
+            reg_dates = []
+            sample_counts = []
+            is_embeddings = []
+            sample_indices = []
+            
+            for reg_num, data in metadata.items():
+                reg_numbers.append(reg_num)
+                full_names.append(data.get("full_name", ""))
+                mobile_numbers.append(data.get("mobile_number", ""))
+                reg_dates.append(data.get("registration_date", self._get_current_date()))
+                sample_counts.append(data.get("sample_count", 0))
+                is_embeddings.append(False)
+                sample_indices.append(-1)
+            
+            # First check if collection has data
+            count = collection.num_entities
+            
+            if count > 0:
+                # Drop and recreate collection instead of deleting individual records
+                utility.drop_collection("face_datastore")
+                self._create_datastore_collection()
+                collection = Collection("face_datastore")
+            
+            # Insert all records at once
+            entities = [
+                reg_numbers,
+                full_names,
+                mobile_numbers,
+                reg_dates,
+                sample_counts,
+                is_embeddings,
+                sample_indices
+            ]
+            
+            collection.insert(entities)
+            print(f"Successfully saved metadata for {len(reg_numbers)} persons")
+            
+        except Exception as e:
+            print(f"Error saving metadata to Milvus: {e}")
+    
+    def _get_current_date(self):
+        """Get current date in YYYY-MM-DD format"""
+        return datetime.now().strftime("%Y-%m-%d")
     
     def register_person(self, registration_number, full_name=None, mobile_number=None):
         """Register a person using multiple face samples"""
-        # Check if sample directory exists for this person
-        person_sample_dir = os.path.join(self.samples_dir, registration_number)
-        if not os.path.exists(person_sample_dir):
-            print(f"No samples found for {registration_number}. Please collect samples first.")
-            return False
+        # Ensure directory exists
+        os.makedirs(self.samples_dir, exist_ok=True)
         
-        # Get all embedding files for this person
-        embedding_files = glob.glob(os.path.join(person_sample_dir, "*.npy"))
+        # Convert registration number to string
+        registration_number = str(registration_number)
+        
+        # Check if registration number already exists
+        collection = Collection("face_datastore")
+        collection.load()
+        
+        results = collection.query(
+            expr=f"registration_number == '{registration_number}' && is_embedding == 0",  # 0 instead of false
+            output_fields=["id"]
+        )
+        if len(results) > 0:
+            raise ValueError(f"Registration number {registration_number} already exists")
+        
+        # Find embedding files
+        pattern = os.path.join(self.samples_dir, f"{registration_number}_*.npy")
+        embedding_files = glob.glob(pattern)
+        
+        print(f"Looking for samples with pattern: {pattern}")
+        print(f"Found {len(embedding_files)} sample files")
+        
         if not embedding_files:
-            print(f"No embeddings found for {registration_number}.")
-            return False
-        
-        # Create folder for this person in the database if it doesn't exist
-        person_db_dir = os.path.join(self.db_dir, registration_number)
-        if not os.path.exists(person_db_dir):
-            os.makedirs(person_db_dir)
-        
-        # Copy all embeddings and images to database
-        for emb_file in embedding_files:
-            # Get corresponding image file
-            base_name = os.path.splitext(os.path.basename(emb_file))[0]
-            img_file = os.path.join(person_sample_dir, f"{base_name}.jpg")
+            alt_pattern = os.path.join(self.samples_dir, registration_number, "*.npy")
+            embedding_files = glob.glob(alt_pattern)
+            print(f"Checking alternative pattern: {alt_pattern}")
+            print(f"Found {len(embedding_files)} alternative sample files")
             
-            # Copy files if image exists
-            if os.path.exists(img_file):
-                shutil.copy2(emb_file, os.path.join(person_db_dir, os.path.basename(emb_file)))
-                shutil.copy2(img_file, os.path.join(person_db_dir, os.path.basename(img_file)))
+            if not embedding_files:
+                raise ValueError(f"No face samples found for {registration_number}")
         
-        # Update metadata
-        self.metadata["persons"][registration_number] = {
-            "name": full_name if full_name else registration_number,
-            "mobile": mobile_number if mobile_number else "",
-            "sample_count": len(embedding_files),
-            "registration_date": self._get_current_date()
-        }
-        self._save_metadata()
+        # Prepare data for insertion - embeddings
+        ids = []
+        embeddings = []
+        reg_numbers = []
+        names = []
+        mobile_numbers_list = []
+        dates = []
+        is_embeddings = []
+        sample_counts = []  # Add this list for sample_count field
+        sample_indices = []
         
-        print(f"Successfully registered {registration_number} with {len(embedding_files)} face samples.")
+        num_samples = len(embedding_files)
+        
+        # Add embeddings
+        for i, embedding_file in enumerate(embedding_files):
+            embedding = np.load(embedding_file)
+            entity_id = f"{registration_number}_emb_{i}"
+            
+            ids.append(entity_id)
+            embeddings.append(embedding.tolist())
+            reg_numbers.append(registration_number)
+            names.append(full_name or "")
+            mobile_numbers_list.append(mobile_number or "")
+            dates.append(self._get_current_date())
+            is_embeddings.append(1)  # 1 instead of True
+            sample_counts.append(num_samples)  # Add sample count
+            sample_indices.append(i)
+        
+        # Add metadata record
+        ids.append(f"{registration_number}_meta")
+        # Add a dummy embedding vector for metadata (required by Milvus)
+        dummy_embedding = [0.0] * 512
+        embeddings.append(dummy_embedding)
+        reg_numbers.append(registration_number)
+        names.append(full_name or "")
+        mobile_numbers_list.append(mobile_number or "")
+        dates.append(self._get_current_date())
+        is_embeddings.append(0)  # 0 instead of False
+        sample_counts.append(num_samples)  # Add sample count for metadata
+        sample_indices.append(-1)
+        
+        # Structure data for Milvus - now with all 9 fields
+        entities = [
+            ids,
+            embeddings,
+            reg_numbers,
+            names,
+            mobile_numbers_list,
+            dates,
+            is_embeddings,
+            sample_counts,  # Added this field
+            sample_indices
+        ]
+        
+        # Insert into Milvus
+        collection.insert(entities)
+        print(f"Successfully stored {len(embedding_files)} embeddings in single datastore")
+        
+        # Clean up temporary files
+        for file in embedding_files:
+            try:
+                os.remove(file)
+                print(f"Cleaned up temporary file: {file}")
+            except:
+                pass
+                
         return True
     
     def remove_person(self, registration_number):
         """Remove a person from the database"""
-        person_db_dir = os.path.join(self.db_dir, registration_number)
+        registration_number = str(registration_number)
         
-        if os.path.exists(person_db_dir):
-            shutil.rmtree(person_db_dir)
+        try:
+            collection = Collection("face_datastore")
+            collection.load()
             
-            # Update metadata
-            if registration_number in self.metadata["persons"]:
-                del self.metadata["persons"][registration_number]
-                self._save_metadata()
+            # Check if person exists
+            results = collection.query(
+                expr=f"registration_number == '{registration_number}'",
+                output_fields=["id"]
+            )
             
-            print(f"Successfully removed {registration_number} from the database.")
+            if len(results) == 0:
+                raise ValueError(f"Registration number {registration_number} not found")
+            
+            # Delete all records for this registration number
+            collection.delete(f"registration_number == '{registration_number}'")
+            print(f"Successfully removed person with registration number {registration_number}")
             return True
-        else:
-            print(f"{registration_number} not found in the database.")
-            return False
+            
+        except Exception as e:
+            print(f"Error removing person: {e}")
+            raise
     
     def list_registered_persons(self):
-        """List all registered persons with their info"""
-        if not self.metadata["persons"]:
-            print("No persons registered in the database.")
-            return []
+        """List all registered persons from Milvus"""
+        try:
+            collection = Collection("face_datastore")
+            collection.load()
+            
+            # Debug statement
+            print("Querying Milvus for registered persons...")
+            
+            # Get only metadata records (is_embedding = 0)
+            results = collection.query(
+                expr="is_embedding == 0",
+                output_fields=["registration_number", "full_name", "mobile_number", 
+                              "registration_date", "sample_count"]
+            )
+            
+            # Debug statement
+            print(f"Found {len(results)} records in database")
+            
+            metadata = {}
+            for record in results:
+                reg_num = record["registration_number"]
+                metadata[reg_num] = {
+                    "full_name": record["full_name"],
+                    "mobile_number": record["mobile_number"],
+                    "registration_date": record["registration_date"],
+                    "sample_count": record["sample_count"]
+                }
+                # Debug print
+                print(f"Added person: {reg_num} - {record['full_name']}")
+                
+            return metadata
+            
+        except Exception as e:
+            print(f"Error listing persons: {e}")
+            import traceback
+            traceback.print_exc()
+            return {}
+
+    def _load_person_database(self):
+        """Load person metadata from Milvus"""
+        try:
+            # Connect to Milvus
+            connections.connect("default", host="localhost", port="19530")
+            
+            # Load metadata from person_metadata collection
+            if utility.has_collection("person_metadata"):
+                collection = Collection("person_metadata")
+                collection.load()
+                
+                results = collection.query(
+                    expr="registration_number != ''",
+                    output_fields=["registration_number", "full_name", "registration_date"]
+                )
+                
+                person_db = {}
+                for record in results:
+                    person_db[record["registration_number"]] = {
+                        "name": record["full_name"],
+                        "registration_date": record["registration_date"]
+                    }
+                    
+                return person_db
+                
+        except Exception as e:
+            print(f"Error loading metadata from Milvus: {e}")
+            
+        return {}
         
-        print("\nRegistered Persons:")
-        print("-" * 80)
-        print(f"{'Registration #':<15} {'Full Name':<20} {'Mobile':<15} {'Samples':<10} {'Registration Date':<20}")
-        print("-" * 80)
+    def _find_best_match(self, face_embedding):
+        """Find best matching person using Milvus vector search"""
+        try:
+            # Connect to Milvus
+            connections.connect("default", host="localhost", port="19530")
+            
+            if not utility.has_collection("face_embeddings"):
+                return None, None, 0
+            
+            collection = Collection("face_embeddings")
+            collection.load()
+            
+            # Search parameters
+            search_params = {"metric_type": "COSINE", "params": {"nprobe": 10}}
+            
+            # Search for the most similar face
+            results = collection.search(
+                data=[face_embedding],
+                anns_field="embedding",
+                param=search_params,
+                limit=1,
+                output_fields=["registration_number", "full_name"]
+            )
+            
+            if results and len(results) > 0 and len(results[0]) > 0:
+                match = results[0][0]
+                similarity = match.score
+                
+                if similarity >= self.threshold:
+                    return match.entity.get("registration_number"), match.entity.get("full_name"), similarity
+            
+            return None, None, 0
+            
+        except Exception as e:
+            print(f"Error performing face matching: {e}")
+            return None, None, 0
+
+    def _refresh_person_list(self):
+        """Refresh the list of registered persons in the management tab"""
+        # Clear the current list
+        for item in self.person_tree.get_children():
+            self.person_tree.delete(item)
         
-        for registration_number, info in self.metadata["persons"].items():
-            print(f"{registration_number:<15} {info['name']:<20} {info.get('mobile', ''):<15} {info['sample_count']:<10} {info['registration_date']:<20}")
-        
-        return list(self.metadata["persons"].keys())
-    
-    def _get_current_date(self):
-        """Get current date in YYYY-MM-DD format"""
-        from datetime import datetime
-        return datetime.now().strftime("%Y-%m-%d")
+        try:
+            # Debug statement
+            print("Refreshing person list...")
+            
+            # Get the list of registered persons
+            persons = self.db_manager.list_registered_persons()
+            print(f"Retrieved {len(persons)} persons from database")
+            
+            # Add them to the tree view
+            for reg_num, info in persons.items():
+                full_name = info.get("full_name", "")
+                mobile = info.get("mobile_number", "")
+                sample_count = info.get("sample_count", "0")
+                reg_date = info.get("registration_date", "")
+                
+                print(f"Adding to tree: {reg_num}, {full_name}, {mobile}, {sample_count}, {reg_date}")
+                
+                self.person_tree.insert("", tk.END, values=(
+                    reg_num,
+                    full_name,
+                    mobile,
+                    sample_count,
+                    reg_date
+                ))
+            
+            print(f"Added {len(persons)} entries to the tree view")
+                    
+        except Exception as e:
+            print(f"Error in _refresh_person_list: {e}")
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Error", f"Failed to load registered persons: {str(e)}")
 
 # Example usage
 if __name__ == "__main__":
