@@ -45,19 +45,14 @@ class AttendanceSystemApp:
         self.preview_after_id = None
         
         # Use the same directory for both components
-        samples_dir = 'face_samples'
+        self.samples_dir = 'face_samples'
         
         # Initialize the database manager first
-        try:
-            self.db_manager = face_database_manager.FaceDatabaseManager(samples_dir=samples_dir)
-            print("Database manager initialized successfully")
-        except Exception as e:
-            print(f"Error initializing database manager: {e}")
-            messagebox.showerror("Error", f"Failed to connect to database: {str(e)}")
-            self.db_manager = None
+        self.db_manager = None
+        self._init_database_manager()
             
         # Initialize the face collector
-        self.collector = face_sample_collector.FaceSampleCollector(save_dir=samples_dir)
+        self.collector = face_sample_collector.FaceSampleCollector(save_dir=self.samples_dir)
         
         # Initialize tab contents
         self._init_registration_tab()
@@ -74,6 +69,23 @@ class AttendanceSystemApp:
         # Add recognition control flag
         self.stop_recognition = False
         self.recognition_active = False
+    
+    def _init_database_manager(self):
+        """Initialize connection to the database"""
+        try:
+            self.db_manager = face_database_manager.FaceDatabaseManager(samples_dir=self.samples_dir)
+            print("Database manager initialized successfully")
+            return True
+        except Exception as e:
+            print(f"Error initializing database manager: {e}")
+            messagebox.showerror("Database Connection Error", 
+                               f"Failed to connect to Milvus database: {str(e)}\n\n"
+                               "Please ensure that:\n"
+                               "1. Milvus server is running\n"
+                               "2. Connection settings are correct\n\n"
+                               "You can retry the connection from the Management tab.")
+            self.db_manager = None
+            return False
     
     def _init_registration_tab(self):
         """Initialize the Registration tab"""
@@ -254,6 +266,25 @@ class AttendanceSystemApp:
         frame = ttk.Frame(self.tab_management, padding="10")
         frame.pack(fill=tk.BOTH, expand=True)
         
+        # Database connection status frame
+        db_frame = ttk.LabelFrame(frame, text="Database Connection")
+        db_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Connection status indicator
+        self.db_status_var = tk.StringVar(value="Disconnected" if self.db_manager is None else "Connected")
+        db_status_color = "red" if self.db_manager is None else "green"
+        
+        status_frame = ttk.Frame(db_frame)
+        status_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(status_frame, text="Status:").pack(side=tk.LEFT, padx=5)
+        db_status_label = ttk.Label(status_frame, textvariable=self.db_status_var, foreground=db_status_color)
+        db_status_label.pack(side=tk.LEFT, padx=5)
+        
+        # Retry connection button
+        retry_btn = ttk.Button(status_frame, text="Retry Connection", command=self._retry_db_connection)
+        retry_btn.pack(side=tk.RIGHT, padx=5)
+        
         # Person list
         list_frame = ttk.LabelFrame(frame, text="Registered Persons")
         list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -291,6 +322,23 @@ class AttendanceSystemApp:
         
         # Load the initial list
         self._refresh_person_list()
+
+    def _retry_db_connection(self):
+        """Attempt to reconnect to the database"""
+        if self._init_database_manager():
+            self.db_status_var.set("Connected")
+            for widget in self.tab_management.winfo_children():
+                for label in widget.winfo_children():
+                    if isinstance(label, ttk.Label) and label.cget("textvariable") == str(self.db_status_var):
+                        label.config(foreground="green")
+            messagebox.showinfo("Connection Successful", "Successfully connected to database.")
+            self._refresh_person_list()
+        else:
+            self.db_status_var.set("Disconnected")
+            for widget in self.tab_management.winfo_children():
+                for label in widget.winfo_children():
+                    if isinstance(label, ttk.Label) and label.cget("textvariable") == str(self.db_status_var):
+                        label.config(foreground="red")
     
     def _init_reports_tab(self):
         """Initialize the Reports tab"""
@@ -407,6 +455,12 @@ class AttendanceSystemApp:
     
     def _register_person(self):
         """Register a person in the database"""
+        # Check if database manager is initialized
+        if self.db_manager is None:
+            messagebox.showwarning("Database Error", 
+                                  "No database connection. Please connect to the database first.")
+            return
+            
         registration_number = self.registration_number_var.get().strip()
         full_name = self.full_name_var.get().strip()
         mobile_number = self.mobile_number_var.get().strip()
@@ -539,6 +593,13 @@ class AttendanceSystemApp:
         for item in self.person_tree.get_children():
             self.person_tree.delete(item)
         
+        # Check if database manager is initialized
+        if self.db_manager is None:
+            print("Database manager not initialized. Cannot refresh person list.")
+            messagebox.showwarning("Database Error", 
+                                  "No database connection. Please connect to the database first.")
+            return
+            
         try:
             # Debug statement
             print("Refreshing person list...")
@@ -574,6 +635,12 @@ class AttendanceSystemApp:
     
     def _remove_selected_person(self):
         """Remove selected person from the database"""
+        # Check if database manager is initialized
+        if self.db_manager is None:
+            messagebox.showwarning("Database Error", 
+                                  "No database connection. Please connect to the database first.")
+            return
+            
         selection = self.person_tree.selection()
         if not selection:
             messagebox.showinfo("Information", "Please select a person to remove")

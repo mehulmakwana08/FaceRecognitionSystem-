@@ -249,16 +249,22 @@ class FaceDatabaseManager:
             if len(results) == 0:
                 raise ValueError(f"Registration number {registration_number} not found")
             
-            # Delete each record individually by its primary key
-            deleted_count = 0
-            for record in results:
-                id_val = record["id"]
-                collection.delete(f"id == '{id_val}'")
-                deleted_count += 1
+            # Extract primary key values
+            ids_to_delete = [record["id"] for record in results]
             
-            print(f"Successfully removed person with registration number {registration_number} ({deleted_count} records)")
-            return True
-            
+            # Delete using primary key list - Milvus expects this specific format
+            if ids_to_delete:
+                # For string IDs, we need to wrap each in quotes
+                formatted_ids = ",".join([f"'{id_val}'" for id_val in ids_to_delete])
+                delete_expr = f"id in [{formatted_ids}]"
+                collection.delete(delete_expr)
+                
+                print(f"Successfully removed person with registration number {registration_number} ({len(ids_to_delete)} records)")
+                return True
+            else:
+                print(f"No records found for registration number {registration_number}")
+                return False
+                
         except Exception as e:
             print(f"Error removing person: {e}")
             raise
