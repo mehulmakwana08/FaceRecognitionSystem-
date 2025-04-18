@@ -9,6 +9,20 @@ import csv
 from pymilvus import connections, Collection, utility
 
 class FaceRecognitionSystem:
+    """
+    A comprehensive facial recognition system for attendance tracking.
+    
+    This system utilizes InsightFace for face detection and recognition, and Milvus vector 
+    database for efficient facial embedding storage and similarity search. The system can:
+    1. Detect faces in real-time from webcam feed
+    2. Match detected faces against a database of registered users
+    3. Mark attendance for recognized individuals
+    4. Provide visual feedback with bounding boxes and recognition confidence
+    
+    The implementation uses state-of-the-art deep learning models for high accuracy
+    facial recognition even under varying lighting conditions and facial expressions.
+    """
+    
     def __init__(self, db_dir='face_db', threshold=0.5):
         """
         Initialize the face recognition system.
